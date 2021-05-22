@@ -34,6 +34,7 @@ USERNAME_TO_IDS = "USERNAME_TO_IDS"
 TEACHER_TO_CLASS = "TEACHER_TO_CLASS"
 CLASS_TO_TEACHER = "CLASS_TO_TEACHER"
 CLASS_TO_MESSAGE_ID = "CLASS_TO_MESSAGE_ID"
+MESSAGE_ID_TO_MESSAGE = "MESSAGE_ID_TO_MESSAGE"
 
 ########################################
 ########### COMMON COMMANDS ############
@@ -67,6 +68,7 @@ def class_handler(update: Update, context: CallbackContext) -> None:
     Attendance session for {update.message.text}:
     ''')
   redis_db.hset(CLASS_TO_MESSAGE_ID, update.message.text, message.message_id)
+  redis_db.hset(MESSAGE_ID_TO_MESSAGE, message.message_id, message.text)
 
   class_list = CLASS_TO_STUDENTS[update.message.text].values()
 
@@ -97,11 +99,16 @@ def mark_attendance(update: Update, context: CallbackContext) -> None:
   chat_id = int(redis_db.hget(CLASS_TO_TEACHER, classname))
   message_id = int(redis_db.hget(CLASS_TO_MESSAGE_ID, classname))
   context.bot.edit_message_text(
-    text="HAHAHAHA MARKED",
+    text=update_attendance_message(message_id, f'{update.message.from_user.first_name} {update.message.from_user.last_name}'),
     chat_id=chat_id,
     message_id=message_id
   )
   update.message.reply_text("Attendance marked!")
+
+def update_attendance_message(message_id: int, username: str) -> str:
+  message = redis_db.hget(MESSAGE_ID_TO_MESSAGE, message_id).decode('UTF-8')
+  message += '\n' + username
+  return message
 
 ########################################
 ############# BOT SETUP ################
