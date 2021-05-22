@@ -108,6 +108,7 @@ def mark_attendance(update: Update, context: CallbackContext) -> None:
 def update_attendance_message(message_id: int, username: str) -> str:
   message = redis_db.hget(MESSAGE_ID_TO_MESSAGE, message_id).decode('UTF-8')
   message += '\n' + username
+  redis_db.hset(MESSAGE_ID_TO_MESSAGE, message_id, message)
   return message
 
 ########################################
