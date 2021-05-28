@@ -1,6 +1,5 @@
 import json
 import logging
-import redis
 from telegram import (
   ReplyKeyboardMarkup,
   Update
@@ -14,8 +13,6 @@ from telegram.ext import (
   CallbackContext
 )
 
-# Setup Redis DB
-redis_db = redis.Redis(host='localhost', port=6379, db=0)
 
 # ConversationHandler stuff
 CLASS = range(1)
@@ -27,21 +24,36 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Class defining an attendance session
+class AttendanceSession:
+  def __init__(self, chat_id: int, message_id: int, message: str) -> None:
+    self.chat_id = chat_id
+    self.message_id = message_id
+    self.message = message
+  
+  def to_json(self) -> dict:
+    json_data = {
+      'chat_id': self.chat_id,
+      'message_id': self.message_id,
+      'message': self.message
+    }
+    return json.dumps(json_data)
+
 # Store JSONs as separate maps in Redis
-CLASS_TO_STUDENTS = None
-STUDENTS_TO_CLASS = "STUDENTS_TO_CLASS"
-USERNAME_TO_IDS = "USERNAME_TO_IDS"
-TEACHER_TO_CLASS = "TEACHER_TO_CLASS"
-CLASS_TO_TEACHER = "CLASS_TO_TEACHER"
-CLASS_TO_MESSAGE_ID = "CLASS_TO_MESSAGE_ID"
-MESSAGE_ID_TO_MESSAGE = "MESSAGE_ID_TO_MESSAGE"
+CLASS_TO_STUDENTS = {}
+STUDENTS_TO_CLASS = {}
+CLASS_TO_SESSION = {}
+USERNAME_TO_IDS = {}
 
 ########################################
 ########### COMMON COMMANDS ############
 ########################################
 
 def start(update: Update, _: CallbackContext) ->  None:
-  redis_db.hset(USERNAME_TO_IDS, update.message.from_user.username, update.message.from_user.id)
+  global USERNAME_TO_IDS
+  USERNAME_TO_IDS[update.message.from_user.username] = update.message.from_user.id
+  with open('userids.json', 'w') as f:
+    json.dump(USERNAME_TO_IDS, f)
   update.message.reply_text('Welcome! Your username has been stored in our very secure servers.')
 
 ########################################
@@ -59,19 +71,17 @@ def start_attendance_session(update: Update, _: CallbackContext) -> None:
   return CLASS
 
 def class_handler(update: Update, context: CallbackContext) -> None:
-  # Make the current teacher map to selected class as active
-  redis_db.hset(TEACHER_TO_CLASS, update.message.from_user.id, update.message.text)
-  redis_db.hset(CLASS_TO_TEACHER, update.message.text, update.message.from_user.id)
+  # Create attendance session
+  chat_id = update.message.from_user.id
+  message_text = f'Attendance session for {update.message.text}:'
+  message = update.message.reply_text(message_text)
+  session = AttendanceSession(chat_id=chat_id, message_id=message.message_id, message=message_text)
 
-  # Create attendance message
-  message = update.message.reply_text(f'''
-    Attendance session for {update.message.text}:
-    ''')
-  redis_db.hset(CLASS_TO_MESSAGE_ID, update.message.text, message.message_id)
-  redis_db.hset(MESSAGE_ID_TO_MESSAGE, message.message_id, message.text)
+  # Save session in dictionary
+  CLASS_TO_SESSION[update.message.text] = session.to_json()
 
+  # Send message to students in class
   class_list = CLASS_TO_STUDENTS[update.message.text].values()
-
   update.message.reply_text('Sending attendance messages...')
   send_attendance_messages(context, class_list)
 
@@ -84,10 +94,10 @@ def cancel(update: Update, _: CallbackContext) -> None:
 # Send messages to all users in usernames
 def send_attendance_messages(context: CallbackContext, usernames: list[str]) -> None:
   for username in usernames:
-    chat_id = int(redis_db.hget(USERNAME_TO_IDS, username))
+    chat_id = USERNAME_TO_IDS[username]
     context.bot.send_message(
       chat_id=chat_id,
-      text='Mark attendance pls'
+      text='Mark attendance!'
     )
 
 ########################################
@@ -95,21 +105,20 @@ def send_attendance_messages(context: CallbackContext, usernames: list[str]) -> 
 ########################################
 
 def mark_attendance(update: Update, context: CallbackContext) -> None:
-  classname = redis_db.hget(STUDENTS_TO_CLASS, update.message.from_user.username)
-  chat_id = int(redis_db.hget(CLASS_TO_TEACHER, classname))
-  message_id = int(redis_db.hget(CLASS_TO_MESSAGE_ID, classname))
+  # Get attendance session
+  classname = STUDENTS_TO_CLASS[update.message.from_user.username]
+  session = json.loads(CLASS_TO_SESSION[classname])
+
   context.bot.edit_message_text(
-    text=update_attendance_message(message_id, f'{update.message.from_user.first_name} {update.message.from_user.last_name}'),
-    chat_id=chat_id,
-    message_id=message_id
+    text=update_attendance_message(session, f'{update.message.from_user.first_name} {update.message.from_user.last_name}'),
+    chat_id=session['chat_id'],
+    message_id=session['message_id']
   )
   update.message.reply_text("Attendance marked!")
 
-def update_attendance_message(message_id: int, username: str) -> str:
-  message = redis_db.hget(MESSAGE_ID_TO_MESSAGE, message_id).decode('UTF-8')
-  message += '\n' + username
-  redis_db.hset(MESSAGE_ID_TO_MESSAGE, message_id, message)
-  return message
+def update_attendance_message(session: dict, username: str) -> str:
+  session['message'] += '\n' + username
+  return session['message']
 
 ########################################
 ############# BOT SETUP ################
@@ -121,14 +130,17 @@ def init_data() -> None:
     CLASS_TO_STUDENTS = json.load(f)
   for classname, students in CLASS_TO_STUDENTS.items():
     for _, student_id in students.items():
-      redis_db.hset(STUDENTS_TO_CLASS, student_id, classname)
+      STUDENTS_TO_CLASS[student_id] = classname
+  with open('userids.json') as f:
+    global USERNAME_TO_IDS
+    USERNAME_TO_IDS = json.load(f)
 
 def main() -> None:
   # Init Redis data
   init_data()
 
   # Create the Updater and pass it your bot's token.
-  updater = Updater('1831856314:AAFja2_HM9Secj55Zqd_2hGkoX-PpX-HFVQ')
+  updater = Updater('TOKEN')
 
   # Get the dispatcher to register handlers
   dispatcher = updater.dispatcher
